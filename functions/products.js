@@ -2,7 +2,8 @@ const shopwareApiUrl = 'https://shop.dantoy.dk/api';
 
 const allowedOrigins = [
   'https://b2b-api-test.pages.dev',
-  'http://localhost:3000'
+  'http://localhost:3000',
+  '80.198.193.66'
 ];
 
 // ✅ CORS headers
