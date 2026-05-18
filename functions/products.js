@@ -247,7 +247,9 @@ export async function onRequest(context) {
     const skip = parseInt(url.searchParams.get("skip")) || 0;
 
     // ✅ 6. Map products
-    const products = rawProducts.map((product) => ({
+    const products = rawProducts
+      .filter(product => product.active === true)
+      .map((product) => ({
       productNumber: product.productNumber,
       description: product.name,
       EAN: product.customFields?.eanColli || null,
