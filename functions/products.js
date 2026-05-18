@@ -101,7 +101,7 @@ export async function onRequest(context) {
       const productNumber = url.searchParams.get('productNumber');
       const limit = parseInt(url.searchParams.get('limit')) || 0;
       const skip = parseInt(url.searchParams.get('skip')) || 0;
-
+      console.log("API response:", JSON.stringify(responseData));
       // ✅ Transform products
       const products = responseData.data.map(product => ({
         productNumber: product.productNumber,
