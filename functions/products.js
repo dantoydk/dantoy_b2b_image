@@ -223,6 +223,12 @@ export async function onRequest(context) {
 
       if (!productId || !mediaUrl) continue;
 
+      
+      // ✅ Only allow image types
+      if (!pm.media?.mimeType || !pm.media.mimeType.startsWith("image/")) {
+        continue;
+      }
+
       const cleanUrl = mediaUrl.replace(/ /g, "%20");
 
       if (!productImagesMap[productId]) {
