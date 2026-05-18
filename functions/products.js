@@ -1,192 +1,143 @@
-//const https = require('https');
-//const querystring = require('querystring');
-
-const axios = require('axios');
-
 const shopwareApiUrl = 'https://shop.dantoy.dk/api';
 
 const allowedOrigins = [
-    'https://b2b-api-test.pages.dev/',
-    "http://localhost:3000",
-    "87.61.102.172",
-    "80.62.116.17",
-    "80.198.193.66"
-  ]
-  
-  // A function that returns a set of CORS headers
-const corsHeaders = origin => ({
-    'Access-Control-Allow-Headers': '*',
-    'Access-Control-Allow-Methods': 'GET',
-    'Access-Control-Allow-Origin': origin
-  })
+  'https://b2b-api-test.pages.dev',
+  'http://localhost:3000'
+];
 
-const checkOrigin = request => {
-    const origin = request.headers.get("x-real-ip")
-    const foundOrigin = allowedOrigins.includes(origin)
-    console.log(`cors origin ${JSON.stringify(origin)}`)
-    return foundOrigin
-  }
+// ✅ CORS headers
+const corsHeaders = (origin) => ({
+  'Access-Control-Allow-Headers': '*',
+  'Access-Control-Allow-Methods': 'GET',
+  'Access-Control-Allow-Origin': origin
+});
 
-function  checkAuth(list, header) {
-    let foundAuth = false
-    try {
-        const parsedAuth = header.split(" ")[1]
-        foundAuth = list.includes(parsedAuth)
-    } catch (error) {
-        console.error('Nonauthorized:', error);
-    }
-
-    return foundAuth
-  }
-
-
-async function getShopwareApiToken(id, secret) {
-   
-    try {
-        const response = await axios.post(`${shopwareApiUrl}/oauth/token`, {
-            grant_type: 'client_credentials',
-            client_id: id,
-            client_secret: secret
-        });
-        return response.data.access_token;
-    } catch (error) {
-        console.error('Error obtaining API token:', error);
-        throw new Error('Error obtaining API token');
-    }
+// ✅ Check origin (fixed)
+function checkOrigin(request) {
+  const origin = request.headers.get("Origin");
+  const isAllowed = allowedOrigins.includes(origin);
+  console.log(`Origin: ${origin}, allowed: ${isAllowed}`);
+  return isAllowed ? origin : null;
 }
-// let productsGlobal = []
 
-// const pollingInterval = 10000; // 5 seconds in milliseconds
-// const maxPollingDuration = 300000; // 300 seconds (5 minutes) in milliseconds
+// ✅ Check API key auth
+function checkAuth(list, header) {
+  let foundAuth = false;
+  try {
+    const parsedAuth = header?.split(" ")[1];
+    foundAuth = list.includes(parsedAuth);
+  } catch (error) {
+    console.error('Unauthorized:', error);
+  }
+  return foundAuth;
+}
 
-// async function pollApi(pollingInterval, maxPollingDuration, context) {
-//     const startTime = Date.now(); // Record the start time
-//     const clientId = context.env.client_id;
-//     const clientSecret = context.env.client_secret;
+// ✅ Get Shopware token (fetch version)
+async function getShopwareApiToken(id, secret) {
+  const response = await fetch(`${shopwareApiUrl}/oauth/token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      grant_type: 'client_credentials',
+      client_id: id,
+      client_secret: secret
+    })
+  });
 
-//     const makeRequest = async () => {
-//         try {
-//             const token = await getShopwareApiToken(clientId, clientSecret);
-//             const response = await axios.get(`${shopwareApiUrl}/product`, {
-//             headers: {
-//                 'Authorization': `Bearer ${token}`
-//             }
-//         });
+  if (!response.ok) {
+    throw new Error("Failed to get token");
+  }
 
-//         // Extract product ID and custom fields
-//             const products = response.data.data.map(product => ({
-//             //id: product.id,
-//             productNumber: parseInt(product.productNumber),
-//             description: product.name,
-//             width: product.width,
-//             stock: ((product.customFields.stockB2B > 0) ? true : false)
-            
-//         }));
-//         console.log('products received')
-//         products.sort(function(a, b) {
-//             return parseFloat(a.productNumber) - parseFloat(b.productNumber);
-//         });
-//         console.log('products sorted')
-//         productsGlobal = products;
-//         console.log('Request made.')
-//         const elapsedTime = Date.now() - startTime;
-        
-//         if (elapsedTime < maxPollingDuration) {
-//             setTimeout(makeRequest, pollingInterval); // Schedule next request
-//         } else {
-//             console.log('Maximum polling duration reached. Stopping polling.');
-//         }
-//         return
-//         } catch (error) {
-//             console.error('Error making API request:', error);
-//             const elapsedTime = Date.now() - startTime;
+  const data = await response.json();
+  return data.access_token;
+}
 
-//             if (elapsedTime < maxPollingDuration) {
-//                 setTimeout(makeRequest, pollingInterval); // Schedule next request
-//             } else {
-//                 console.log('Maximum polling duration reached. Stopping polling.');
-//             }
-//         }
-//     };
-
-//     makeRequest(); // Start the first request
-// }
-// export default {
-//     async fetch(request, env, context) {
-//     productsGlobal = [1]
-//     pollApi(pollingInterval,maxPollingDuration, context)
-//     }
-// }
-
-
+// ✅ Main handler
 export async function onRequest(context) {
-    const {request} = context;
-    const {method} = request;
-    const clientId = context.env.client_id;
-    const clientSecret = context.env.client_secret;
-    const clientKey = context.env.client_key;
-    const allowedKeys = [clientKey]
-    const authHeader = request.headers.get("Authorization")
-    const allowedOrigin = checkOrigin(request)
-    const allowedAuth  = checkAuth(allowedKeys, authHeader)
-    console.log(`allowed auth ${allowedAuth}`)
-    console.log(`allowed origin ${allowedOrigin}`)
-    // if (method === "OPTIONS") {
-    //     // Check that the request's origin is a valid origin, allowed to access this API
-    //     const allowedOrigin = checkOrigin(request)
-    //     console.log(`check ${allowedOrigin}`)
-    //     return new Response("OK", { headers: corsHeaders(allowedOrigin) })
-    //   }
-    
-    if(method === "GET" && allowedOrigin === true) {
-        let fail = 'Failed to fetch products';
-        try {
-            const token = await getShopwareApiToken(clientId, clientSecret);
-            const response = await axios.get(`${shopwareApiUrl}/product`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
-            });
-            const url = new URL(request.url)
-            const productNumber = url.searchParams.get('productNumber')
-            const limit = parseInt(url.searchParams.get('limit')) || 0
-            const skip = parseInt(url.searchParams.get('skip')) || 0
-    
-            // Extract product ID and custom fields
-            const products = response.data.data.map(product => ({
-                //id: product.id,
-                productNumber: product.productNumber,
-                description: product.name,
+  const { request, env } = context;
+  const { method } = request;
 
-                EAN: product.customFields.eanColli,
-                stock: ((product.customFields.stockB2B > 0) ? true : false),
-                updatedAt: product.updatedAt
-                
-            }));
-            products.sort(function(a, b) {
-                return parseFloat(a.productNumber) - parseFloat(b.productNumber);
-            });
-            let filteredProducts = products
-            if (productNumber) {
-                filteredProducts = products.filter(product => product.productNumber === productNumber.toString())
-                
-              } else if (limit > 0) {
-                filteredProducts = products.slice(skip, skip + limit)
-              }
-            // if (productsGlobal.length === 0) {
-            //     console.log('running poll')
-            //     pollApi(pollingInterval,maxPollingDuration, context)
-            // }
-            // const allowedOrigin = checkOrigin(request)
-           return new Response(JSON.stringify(filteredProducts))
-        } catch (error) {
-            return new Response(fail.concat(" ",error),{
-                status:404
-            });
+  const clientId = env.client_id;
+  const clientSecret = env.client_secret;
+  const clientKey = env.client_key;
+
+  const allowedKeys = [clientKey];
+  const authHeader = request.headers.get("Authorization");
+
+  const origin = checkOrigin(request);
+  const allowedAuth = checkAuth(allowedKeys, authHeader);
+
+  console.log(`Auth OK: ${allowedAuth}`);
+
+  // ✅ Handle CORS preflight
+  if (method === "OPTIONS") {
+    return new Response("OK", {
+      headers: corsHeaders(origin || "*")
+    });
+  }
+
+  // ✅ Only allow GET + valid origin + auth
+  if (method === "GET" && origin && allowedAuth) {
+    try {
+      const token = await getShopwareApiToken(clientId, clientSecret);
+
+      const response = await fetch(`${shopwareApiUrl}/product`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
         }
-    } else {
-        return new Response(`Method or origin not allowed`,{
-            status:500
-        });
+      });
+
+      if (!response.ok) {
+        throw new Error("API request failed");
+      }
+
+      const responseData = await response.json();
+
+      const url = new URL(request.url);
+      const productNumber = url.searchParams.get('productNumber');
+      const limit = parseInt(url.searchParams.get('limit')) || 0;
+      const skip = parseInt(url.searchParams.get('skip')) || 0;
+
+      // ✅ Transform products
+      const products = responseData.data.map(product => ({
+        productNumber: product.productNumber,
+        description: product.name,
+        EAN: product.customFields?.eanColli || null,
+        stock: (product.customFields?.stockB2B || 0) > 0,
+        updatedAt: product.updatedAt
+      }));
+
+      // ✅ Sort
+      products.sort((a, b) => parseFloat(a.productNumber) - parseFloat(b.productNumber));
+
+      // ✅ Filtering
+      let filteredProducts = products;
+
+      if (productNumber) {
+        filteredProducts = products.filter(p => p.productNumber === productNumber);
+      } else if (limit > 0) {
+        filteredProducts = products.slice(skip, skip + limit);
+      }
+
+      return new Response(JSON.stringify(filteredProducts), {
+        headers: {
+          ...corsHeaders(origin),
+          'Content-Type': 'application/json'
+        }
+      });
+
+    } catch (error) {
+      return new Response(`Failed to fetch products: ${error.message}`, {
+        status: 500,
+        headers: corsHeaders(origin || "*")
+      });
     }
+  }
+
+  return new Response('Unauthorized or invalid request', {
+    status: 403,
+    headers: corsHeaders(origin || "*")
+  });
 }
