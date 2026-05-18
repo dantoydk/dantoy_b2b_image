@@ -55,19 +55,59 @@ async function getShopwareApiToken(id, secret) {
   const data = await response.json();
   return data.access_token;
 }
+async function fetchProductMediaLimited(url, headers, maxLimit = 3000) {
+  let allData = [];
+  let page = 1;
+
+  while (allData.length < maxLimit) {
+    const limit = Math.min(100, maxLimit - allData.length);
+
+    const res = await fetch(`${url}?page=${page}&limit=${limit}`, {
+      method: "GET",
+      headers
+    });
+
+    const text = await res.text();
+    console.log(`Media page ${page}`);
+
+    if (!res.ok) {
+      console.error("Media fetch failed:", text);
+      throw new Error("Failed fetching product media");
+    }
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("Invalid JSON from product-media");
+    }
+
+    const pageData = data.data || [];
+
+    if (pageData.length === 0) break;
+
+    allData.push(...pageData);
+
+    if (pageData.length < limit) break;
+
+    page++;
+  }
+
+  return allData;
+}
 
 // ✅ Main handler
 export async function onRequest(context) {
   const { request, env } = context;
   const { method } = request;
 
+  const shopwareApiUrl = "https://shop.dantoy.dk/api";
+
   const clientId = env.client_id;
   const clientSecret = env.client_secret;
   const clientKey = env.client_key;
 
-  const shopwareApiUrl = "https://shop.dantoy.dk/api";
-
-  // ✅ Simple auth check
+  // ✅ Auth check
   function checkAuth(header) {
     try {
       const key = header?.split(" ")[1];
@@ -108,8 +148,8 @@ export async function onRequest(context) {
     const tokenData = JSON.parse(tokenText);
     const token = tokenData.access_token;
 
-    // ✅ 2. Fetch products using /product
-    const apiRes = await fetch(`${shopwareApiUrl}/product`, {
+    // ✅ 2. Fetch products
+    const productRes = await fetch(`${shopwareApiUrl}/product`, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${token}`,
@@ -117,46 +157,105 @@ export async function onRequest(context) {
       }
     });
 
-    const apiText = await apiRes.text();
-    console.log("Product API raw response:", apiText);
+    const productText = await productRes.text();
+    console.log("Product API response:", productText);
 
-    if (!apiRes.ok) {
+    if (!productRes.ok) {
       throw new Error("Product request failed");
     }
 
-    let responseData;
-    try {
-      responseData = JSON.parse(apiText);
-    } catch {
-      throw new Error("Invalid JSON from product API");
-    }
-
-    // ✅ Ensure data exists
-    const rawProducts = Array.isArray(responseData.data)
-      ? responseData.data
+    const productData = JSON.parse(productText);
+    const rawProducts = Array.isArray(productData.data)
+      ? productData.data
       : [];
 
-    // ✅ Query params
+    // ✅ 3. Fetch product-media (max 3000)
+    async function fetchProductMediaLimited(url, headers, maxLimit = 3000) {
+      let allData = [];
+      let page = 1;
+
+      while (allData.length < maxLimit) {
+        const limit = Math.min(100, maxLimit - allData.length);
+
+        const res = await fetch(`${url}?page=${page}&limit=${limit}`, {
+          method: "GET",
+          headers
+        });
+
+        const text = await res.text();
+        console.log(`Media page ${page}`);
+
+        if (!res.ok) {
+          console.error("Media error:", text);
+          throw new Error("Failed fetching product media");
+        }
+
+        const data = JSON.parse(text);
+        const pageData = data.data || [];
+
+        if (!pageData.length) break;
+
+        allData.push(...pageData);
+
+        if (pageData.length < limit) break;
+
+        page++;
+      }
+
+      return allData;
+    }
+
+    const mediaData = await fetchProductMediaLimited(
+      `${shopwareApiUrl}/product-media`,
+      {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/json"
+      },
+      3000
+    );
+
+    // ✅ 4. Build product → images map
+    const productImagesMap = {};
+
+    for (const pm of mediaData) {
+      const productId = pm.productId;
+      const mediaUrl = pm.media?.url;
+
+      if (!productId || !mediaUrl) continue;
+
+      const cleanUrl = mediaUrl.replace(/ /g, "%20");
+
+      if (!productImagesMap[productId]) {
+        productImagesMap[productId] = [];
+      }
+
+      if (productImagesMap[productId].length < 10) {
+        productImagesMap[productId].push(cleanUrl);
+      }
+    }
+
+    // ✅ 5. Query params
     const url = new URL(request.url);
     const productNumber = url.searchParams.get("productNumber");
     const limit = parseInt(url.searchParams.get("limit")) || 0;
     const skip = parseInt(url.searchParams.get("skip")) || 0;
 
-    // ✅ Safe mapping
+    // ✅ 6. Map products
     const products = rawProducts.map((product) => ({
       productNumber: product.productNumber,
       description: product.name,
       EAN: product.customFields?.eanColli || null,
       stock: (product.customFields?.stockB2B || 0) > 0,
-      updatedAt: product.updatedAt
+      updatedAt: product.updatedAt,
+      images: productImagesMap[product.id] || []
     }));
 
-    // ✅ Sort
+    // ✅ 7. Sort
     products.sort((a, b) => {
       return parseFloat(a.productNumber) - parseFloat(b.productNumber);
     });
 
-    // ✅ Filter
+    // ✅ 8. Filter
     let filteredProducts = products;
 
     if (productNumber) {
@@ -167,7 +266,7 @@ export async function onRequest(context) {
       filteredProducts = products.slice(skip, skip + limit);
     }
 
-    // ✅ Response
+    // ✅ 9. Return
     return new Response(JSON.stringify(filteredProducts), {
       headers: {
         "Content-Type": "application/json"
