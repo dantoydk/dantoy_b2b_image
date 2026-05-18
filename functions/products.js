@@ -65,9 +65,9 @@ export async function onRequest(context) {
   const clientSecret = env.client_secret;
   const clientKey = env.client_key;
 
-  const authHeader = request.headers.get("Authorization");
+  const shopwareApiUrl = "https://shop.dantoy.dk/api";
 
-  // ✅ Simple auth check only
+  // ✅ Simple auth check
   function checkAuth(header) {
     try {
       const key = header?.split(" ")[1];
@@ -77,6 +77,7 @@ export async function onRequest(context) {
     }
   }
 
+  const authHeader = request.headers.get("Authorization");
   const allowedAuth = checkAuth(authHeader);
 
   if (method !== "GET" || !allowedAuth) {
@@ -107,14 +108,13 @@ export async function onRequest(context) {
     const tokenData = JSON.parse(tokenText);
     const token = tokenData.access_token;
 
-    // ✅ 2. Fetch products (correct endpoint)
-    const apiRes = await fetch(`${shopwareApiUrl}/search/product`, {
-      method: "POST",
+    // ✅ 2. Fetch products using /product
+    const apiRes = await fetch(`${shopwareApiUrl}/product`, {
+      method: "GET",
       headers: {
         "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({})
+        "Accept": "application/json"
+      }
     });
 
     const apiText = await apiRes.text();
@@ -127,22 +127,23 @@ export async function onRequest(context) {
     let responseData;
     try {
       responseData = JSON.parse(apiText);
-    } catch (err) {
+    } catch {
       throw new Error("Invalid JSON from product API");
     }
 
-    if (!Array.isArray(responseData.data)) {
-      throw new Error("Product data missing or invalid");
-    }
+    // ✅ Ensure data exists
+    const rawProducts = Array.isArray(responseData.data)
+      ? responseData.data
+      : [];
 
-    // ✅ 3. Query params
+    // ✅ Query params
     const url = new URL(request.url);
     const productNumber = url.searchParams.get("productNumber");
     const limit = parseInt(url.searchParams.get("limit")) || 0;
     const skip = parseInt(url.searchParams.get("skip")) || 0;
 
-    // ✅ 4. Transform safely
-    const products = responseData.data.map(product => ({
+    // ✅ Safe mapping
+    const products = rawProducts.map((product) => ({
       productNumber: product.productNumber,
       description: product.name,
       EAN: product.customFields?.eanColli || null,
@@ -150,19 +151,23 @@ export async function onRequest(context) {
       updatedAt: product.updatedAt
     }));
 
-    // ✅ 5. Sort
-    products.sort((a, b) => parseFloat(a.productNumber) - parseFloat(b.productNumber));
+    // ✅ Sort
+    products.sort((a, b) => {
+      return parseFloat(a.productNumber) - parseFloat(b.productNumber);
+    });
 
-    // ✅ 6. Filter
+    // ✅ Filter
     let filteredProducts = products;
 
     if (productNumber) {
-      filteredProducts = products.filter(p => p.productNumber === productNumber);
+      filteredProducts = products.filter(
+        (p) => p.productNumber === productNumber
+      );
     } else if (limit > 0) {
       filteredProducts = products.slice(skip, skip + limit);
     }
 
-    // ✅ 7. Return
+    // ✅ Response
     return new Response(JSON.stringify(filteredProducts), {
       headers: {
         "Content-Type": "application/json"
@@ -170,10 +175,11 @@ export async function onRequest(context) {
     });
 
   } catch (error) {
-    console.error("ERROR:", error.message);
+    console.error("ERROR:", error);
 
-    return new Response(`Failed to fetch products: ${error.message}`, {
-      status: 500
-    });
+    return new Response(
+      `Failed to fetch products: ${error.message}`,
+      { status: 500 }
+    );
   }
 }
