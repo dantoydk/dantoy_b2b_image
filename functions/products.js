@@ -79,7 +79,7 @@ export async function onRequest(context) {
   }
 
   // ✅ Only allow GET + valid origin + auth
-  if (method === "GET" && origin && allowedAuth) {
+  if (method === "GET" && allowedAuth) {
     try {
       const token = await getShopwareApiToken(clientId, clientSecret);
 
