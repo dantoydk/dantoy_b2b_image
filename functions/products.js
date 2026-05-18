@@ -1,102 +1,42 @@
-const shopwareApiUrl = 'https://shop.dantoy.dk/api';
+// ✅ Rate limit store (simple in-memory)
+const rateLimitMap = new Map();
 
-const allowedOrigins = [
-  'https://b2b-api-test.pages.dev',
-  'http://localhost:3000',
-  '80.198.193.66',
-  '94.145.168.6'
+// ✅ Allowed IPs
+const allowedIPs = [
+  "94.145.168.6",
+  "80.198.193.66"
 ];
 
-// ✅ CORS headers
-const corsHeaders = (origin) => ({
-  'Access-Control-Allow-Headers': '*',
-  'Access-Control-Allow-Methods': 'GET',
-  'Access-Control-Allow-Origin': origin
-});
-
-// ✅ Check origin (fixed)
-function checkOrigin(request) {
-  const origin = request.headers.get("Origin");
-  const isAllowed = allowedOrigins.includes(origin);
-  console.log(`Origin: ${origin}, allowed: ${isAllowed}`);
-  return isAllowed ? origin : null;
+function checkIP(request) {
+  const ip = request.headers.get("cf-connecting-ip");
+  console.log("Client IP:", ip);
+  return allowedIPs.includes(ip);
 }
 
-// ✅ Check API key auth
-function checkAuth(list, header) {
-  let foundAuth = false;
-  try {
-    const parsedAuth = header?.split(" ")[1];
-    foundAuth = list.includes(parsedAuth);
-  } catch (error) {
-    console.error('Unauthorized:', error);
-  }
-  return foundAuth;
-}
+function checkRateLimit(ip, limit = 60, windowMs = 60000) {
+  const now = Date.now();
 
-// ✅ Get Shopware token (fetch version)
-async function getShopwareApiToken(id, secret) {
-  const response = await fetch(`${shopwareApiUrl}/oauth/token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      grant_type: 'client_credentials',
-      client_id: id,
-      client_secret: secret
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to get token");
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, { count: 1, start: now });
+    return true;
   }
 
-  const data = await response.json();
-  return data.access_token;
-}
-async function fetchProductMediaLimited(url, headers, maxLimit = 3000) {
-  let allData = [];
-  let page = 1;
+  const record = rateLimitMap.get(ip);
 
-  while (allData.length < maxLimit) {
-    const limit = Math.min(100, maxLimit - allData.length);
-
-    const res = await fetch(`${url}?page=${page}&limit=${limit}`, {
-      method: "GET",
-      headers
-    });
-
-    const text = await res.text();
-    console.log(`Media page ${page}`);
-
-    if (!res.ok) {
-      console.error("Media fetch failed:", text);
-      throw new Error("Failed fetching product media");
-    }
-
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      throw new Error("Invalid JSON from product-media");
-    }
-
-    const pageData = data.data || [];
-
-    if (pageData.length === 0) break;
-
-    allData.push(...pageData);
-
-    if (pageData.length < limit) break;
-
-    page++;
+  if (now - record.start > windowMs) {
+    rateLimitMap.set(ip, { count: 1, start: now });
+    return true;
   }
 
-  return allData;
+  record.count++;
+
+  if (record.count > limit) {
+    return false;
+  }
+
+  return true;
 }
 
-// ✅ Main handler
 export async function onRequest(context) {
   const { request, env } = context;
   const { method } = request;
@@ -107,7 +47,7 @@ export async function onRequest(context) {
   const clientSecret = env.client_secret;
   const clientKey = env.client_key;
 
-  // ✅ Auth check
+  // ✅ Auth
   function checkAuth(header) {
     try {
       const key = header?.split(" ")[1];
@@ -119,9 +59,15 @@ export async function onRequest(context) {
 
   const authHeader = request.headers.get("Authorization");
   const allowedAuth = checkAuth(authHeader);
+  const ip = request.headers.get("cf-connecting-ip");
 
-  if (method !== "GET" || !allowedAuth) {
+  // ✅ Security checks
+  if (method !== "GET" || !allowedAuth || !checkIP(request)) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  if (!checkRateLimit(ip, 60, 60000)) {
+    return new Response("Too Many Requests", { status: 429 });
   }
 
   try {
@@ -139,9 +85,9 @@ export async function onRequest(context) {
     });
 
     const tokenText = await tokenRes.text();
-    console.log("Token response:", tokenText);
 
     if (!tokenRes.ok) {
+      console.error("Token error:", tokenText);
       throw new Error("Token request failed");
     }
 
@@ -158,9 +104,9 @@ export async function onRequest(context) {
     });
 
     const productText = await productRes.text();
-    console.log("Product API response:", productText);
 
     if (!productRes.ok) {
+      console.error("Product error:", productText);
       throw new Error("Product request failed");
     }
 
@@ -169,7 +115,7 @@ export async function onRequest(context) {
       ? productData.data
       : [];
 
-    // ✅ 3. Fetch product-media (max 3000)
+    // ✅ 3. Fetch product-media (limit 3000)
     async function fetchProductMediaLimited(url, headers, maxLimit = 3000) {
       let allData = [];
       let page = 1;
@@ -183,7 +129,6 @@ export async function onRequest(context) {
         });
 
         const text = await res.text();
-        console.log(`Media page ${page}`);
 
         if (!res.ok) {
           console.error("Media error:", text);
@@ -219,15 +164,15 @@ export async function onRequest(context) {
 
     for (const pm of mediaData) {
       const productId = pm.productId;
-      const mediaUrl = pm.media?.url;
+      const media = pm.media;
 
-      if (!productId || !mediaUrl) continue;
+      if (!productId || !media) continue;
 
-      
-      // ✅ Only allow image types
-      if (!pm.media?.mimeType || !pm.media.mimeType.startsWith("image/")) {
-        continue;
-      }
+      // ✅ Only images (no PDFs)
+      if (!media.mimeType || !media.mimeType.startsWith("image/")) continue;
+
+      const mediaUrl = media.url;
+      if (!mediaUrl) continue;
 
       const cleanUrl = mediaUrl.replace(/ /g, "%20");
 
@@ -246,38 +191,40 @@ export async function onRequest(context) {
     const limit = parseInt(url.searchParams.get("limit")) || 0;
     const skip = parseInt(url.searchParams.get("skip")) || 0;
 
-    // ✅ 6. Map products
+    // ✅ 6. Filter ACTIVE products + map
     const products = rawProducts
-      .filter(product => product.active === true)
-      .map((product) => ({
-      productNumber: product.productNumber,
-      description: product.name,
-      EAN: product.customFields?.eanColli || null,
-      stock: (product.customFields?.stockB2B || 0) > 0,
-      updatedAt: product.updatedAt,
-      images: productImagesMap[product.id] || []
-    }));
+      .filter(p => p.active === true)
+      .map(product => ({
+        productNumber: product.productNumber,
+        description: product.name,
+        EAN: product.customFields?.eanColli || null,
+        //stock: (product.customFields?.stockB2B || 0) > 0,
+        updatedAt: product.updatedAt,
+        images: productImagesMap[product.id] || []
+      }));
 
     // ✅ 7. Sort
-    products.sort((a, b) => {
-      return parseFloat(a.productNumber) - parseFloat(b.productNumber);
-    });
+    products.sort((a, b) =>
+      parseFloat(a.productNumber) - parseFloat(b.productNumber)
+    );
 
-    // ✅ 8. Filter
+    // ✅ 8. Filter results
     let filteredProducts = products;
 
     if (productNumber) {
       filteredProducts = products.filter(
-        (p) => p.productNumber === productNumber
+        p => p.productNumber === productNumber
       );
     } else if (limit > 0) {
       filteredProducts = products.slice(skip, skip + limit);
     }
 
-    // ✅ 9. Return
+    // ✅ 9. Response
     return new Response(JSON.stringify(filteredProducts), {
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-RateLimit-Limit": "60",
+        "X-RateLimit-Window": "60s"
       }
     });
 
