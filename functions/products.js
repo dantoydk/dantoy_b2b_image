@@ -65,81 +65,115 @@ export async function onRequest(context) {
   const clientSecret = env.client_secret;
   const clientKey = env.client_key;
 
-  const allowedKeys = [clientKey];
   const authHeader = request.headers.get("Authorization");
 
-  const origin = checkOrigin(request);
-  const allowedAuth = checkAuth(allowedKeys, authHeader);
-
-  console.log(`Auth OK: ${allowedAuth}`);
-
-  // ✅ Handle CORS preflight
-  if (method === "OPTIONS") {
-    return new Response("OK", {
-      headers: corsHeaders(origin || "*")
-    });
-  }
-
-  // ✅ Only allow GET + valid origin + auth
- if (method === "GET" && (origin || !request.headers.get("Origin")) && allowedAuth) {
+  // ✅ Simple auth check only
+  function checkAuth(header) {
     try {
-      const token = await getShopwareApiToken(clientId, clientSecret);
-
-      const response = await fetch(`${shopwareApiUrl}/product`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error("API request failed");
-      }
-
-      const responseData = await response.json();
-
-      const url = new URL(request.url);
-      const productNumber = url.searchParams.get('productNumber');
-      const limit = parseInt(url.searchParams.get('limit')) || 0;
-      const skip = parseInt(url.searchParams.get('skip')) || 0;
-      console.log("API response:", JSON.stringify(responseData));
-      // ✅ Transform products
-      const products = responseData.data.map(product => ({
-        productNumber: product.productNumber,
-        description: product.name,
-        EAN: product.customFields?.eanColli || null,
-        stock: (product.customFields?.stockB2B || 0) > 0,
-        updatedAt: product.updatedAt
-      }));
-
-      // ✅ Sort
-      products.sort((a, b) => parseFloat(a.productNumber) - parseFloat(b.productNumber));
-
-      // ✅ Filtering
-      let filteredProducts = products;
-
-      if (productNumber) {
-        filteredProducts = products.filter(p => p.productNumber === productNumber);
-      } else if (limit > 0) {
-        filteredProducts = products.slice(skip, skip + limit);
-      }
-
-      return new Response(JSON.stringify(filteredProducts), {
-        headers: {
-          ...corsHeaders(origin),
-          'Content-Type': 'application/json'
-        }
-      });
-
-    } catch (error) {
-      return new Response(`Failed to fetch products: ${error.message}`, {
-        status: 500,
-        headers: corsHeaders(origin || "*")
-      });
+      const key = header?.split(" ")[1];
+      return key === clientKey;
+    } catch {
+      return false;
     }
   }
 
-  return new Response('Unauthorized or invalid request', {
-    status: 403,
-    headers: corsHeaders(origin || "*")
-  });
+  const allowedAuth = checkAuth(authHeader);
+
+  if (method !== "GET" || !allowedAuth) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  try {
+    // ✅ 1. Get token
+    const tokenRes = await fetch(`${shopwareApiUrl}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        grant_type: "client_credentials",
+        client_id: clientId,
+        client_secret: clientSecret
+      })
+    });
+
+    const tokenText = await tokenRes.text();
+    console.log("Token response:", tokenText);
+
+    if (!tokenRes.ok) {
+      throw new Error("Token request failed");
+    }
+
+    const tokenData = JSON.parse(tokenText);
+    const token = tokenData.access_token;
+
+    // ✅ 2. Fetch products (correct endpoint)
+    const apiRes = await fetch(`${shopwareApiUrl}/search/product`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+
+    const apiText = await apiRes.text();
+    console.log("Product API raw response:", apiText);
+
+    if (!apiRes.ok) {
+      throw new Error("Product request failed");
+    }
+
+    let responseData;
+    try {
+      responseData = JSON.parse(apiText);
+    } catch (err) {
+      throw new Error("Invalid JSON from product API");
+    }
+
+    if (!Array.isArray(responseData.data)) {
+      throw new Error("Product data missing or invalid");
+    }
+
+    // ✅ 3. Query params
+    const url = new URL(request.url);
+    const productNumber = url.searchParams.get("productNumber");
+    const limit = parseInt(url.searchParams.get("limit")) || 0;
+    const skip = parseInt(url.searchParams.get("skip")) || 0;
+
+    // ✅ 4. Transform safely
+    const products = responseData.data.map(product => ({
+      productNumber: product.productNumber,
+      description: product.name,
+      EAN: product.customFields?.eanColli || null,
+      stock: (product.customFields?.stockB2B || 0) > 0,
+      updatedAt: product.updatedAt
+    }));
+
+    // ✅ 5. Sort
+    products.sort((a, b) => parseFloat(a.productNumber) - parseFloat(b.productNumber));
+
+    // ✅ 6. Filter
+    let filteredProducts = products;
+
+    if (productNumber) {
+      filteredProducts = products.filter(p => p.productNumber === productNumber);
+    } else if (limit > 0) {
+      filteredProducts = products.slice(skip, skip + limit);
+    }
+
+    // ✅ 7. Return
+    return new Response(JSON.stringify(filteredProducts), {
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+
+  } catch (error) {
+    console.error("ERROR:", error.message);
+
+    return new Response(`Failed to fetch products: ${error.message}`, {
+      status: 500
+    });
+  }
 }
