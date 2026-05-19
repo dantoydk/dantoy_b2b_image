@@ -141,7 +141,7 @@ export async function onRequestGet(context) {
     const productNumber = urlObj.searchParams.get("productNumber");
     const limit = parseInt(urlObj.searchParams.get("limit")) || 0;
     const skip = parseInt(urlObj.searchParams.get("skip")) || 0;
-
+    console.log("RAW PRODUCTS COUNT:", rawProducts.length);
     // ✅ 5. Build response
     const products = rawProducts
       .filter(p => p.active === true)
