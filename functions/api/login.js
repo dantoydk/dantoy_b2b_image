@@ -25,13 +25,13 @@ function checkLoginRateLimit(ip, limit = 10, windowMs = 60000) {
 }
 
 async function checkIPAccess(env, ip) {
-  const enforce = await env.CONTROL_KV.get("config:enforce_ip");
+  const enforce = await env.B2B_IMAGE_IP.get("config:enforce_ip");
 
   if (enforce !== "true") {
     return true;
   }
 
-  const allowed = await env.CONTROL_KV.get(`ip:${ip}`);
+  const allowed = await env.B2B_IMAGE_IP.get(`ip:${ip}`);
   return allowed === "true";
 }
 
