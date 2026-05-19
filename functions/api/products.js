@@ -25,7 +25,7 @@ function checkRateLimit(ip, limit = 60, windowMs = 60000) {
 }
 
 // ==========================
-// ✅ FETCH PRODUCTS (PAGINATION)
+// ✅ FETCH PRODUCTS (WITH TRANSLATIONS)
 // ==========================
 async function fetchProductsLimited(url, headers, maxLimit = 500) {
   let allData = [];
@@ -34,7 +34,7 @@ async function fetchProductsLimited(url, headers, maxLimit = 500) {
   while (allData.length < maxLimit) {
     const limit = Math.min(100, maxLimit - allData.length);
 
-    const res = await fetch(`${url}?page=${page}&limit=${limit}`, {
+    const res = await fetch(`${url}&page=${page}&limit=${limit}`, {
       method: "GET",
       headers
     });
@@ -140,6 +140,10 @@ export async function onRequestGet(context) {
   const clientId = env.client_id;
   const clientSecret = env.client_secret;
 
+  // ✅ Language IDs
+  const LANG_DE = "01900cb1f3fc70539bddaf5d90028e77";
+  const LANG_EN = "01900cd6fae6726b934a666f981223d3";
+
   try {
     // ✅ 1. Get Shopware token
     const tokenRes = await fetch(`${shopwareApiUrl}/oauth/token`, {
@@ -157,9 +161,9 @@ export async function onRequestGet(context) {
     const tokenData = await tokenRes.json();
     const shopToken = tokenData.access_token;
 
-    // ✅ 2. Fetch products (pagination)
+    // ✅ 2. Fetch products WITH translations
     const rawProducts = await fetchProductsLimited(
-      `${shopwareApiUrl}/product`,
+      `${shopwareApiUrl}/product?associations[translations][]`,
       {
         "Authorization": `Bearer ${shopToken}`,
         "Accept": "application/json"
@@ -167,9 +171,9 @@ export async function onRequestGet(context) {
       500
     );
 
-    console.log("RAW PRODUCTS COUNT:", rawProducts.length);
+    console.log("RAW PRODUCTS:", rawProducts.length);
 
-    // ✅ 3. Fetch product-media
+    // ✅ 3. Fetch media
     const mediaData = await fetchMediaLimited(
       `${shopwareApiUrl}/product-media`,
       {
@@ -182,7 +186,7 @@ export async function onRequestGet(context) {
     console.log("MEDIA COUNT:", mediaData.length);
 
     // =========================
-    // ✅ BUILD PRODUCT → IMAGES MAP
+    // ✅ MAP PRODUCT → IMAGES
     // =========================
     const productImagesMap = {};
 
@@ -191,21 +195,17 @@ export async function onRequestGet(context) {
       const media = pm.media;
 
       if (!productId || !media) continue;
+      if (!media.mimeType?.startsWith("image/")) continue;
 
-      if (!media.mimeType || !media.mimeType.startsWith("image/")) continue;
-
-      const mediaUrl = media.url;
-      if (!mediaUrl) continue;
-
-      const cleanUrl = mediaUrl.replace(/ /g, "%20");
+      const url = media.url?.replace(/ /g, "%20");
+      if (!url) continue;
 
       if (!productImagesMap[productId]) {
         productImagesMap[productId] = [];
       }
 
-      // max 10 images per product (change/remove if needed)
       if (productImagesMap[productId].length < 10) {
-        productImagesMap[productId].push(cleanUrl);
+        productImagesMap[productId].push(url);
       }
     }
 
@@ -218,17 +218,35 @@ export async function onRequestGet(context) {
     const skip = parseInt(urlObj.searchParams.get("skip")) || 0;
 
     // =========================
-    // ✅ BUILD FINAL RESPONSE
+    // ✅ BUILD RESULT
     // =========================
     let products = rawProducts
       .filter(p => p.active === true)
-      .map(p => ({
-        productNumber: p.productNumber,
-        productId: p.id,
-        description: p.name,          // ✅ correct
-        updatedAt: p.updatedAt,       // ✅ added
-        images: productImagesMap[p.id] || [] // ✅ all images
-      }));
+      .map(p => {
+        let name_de = "";
+        let name_en = "";
+
+        const translations = p.translations || [];
+
+        for (const t of translations) {
+          if (t.languageId === LANG_DE) {
+            name_de = t.name || "";
+          }
+          if (t.languageId === LANG_EN) {
+            name_en = t.name || "";
+          }
+        }
+
+        return {
+          productNumber: p.productNumber,
+          productId: p.id,
+          description: p.name,
+          description_de: name_de,
+          description_en: name_en,
+          updatedAt: p.updatedAt,
+          images: productImagesMap[p.id] || []
+        };
+      });
 
     // ✅ Sort
     products.sort((a, b) =>
