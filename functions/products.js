@@ -117,6 +117,14 @@ export async function onRequest(context) {
   const method = request.method;
   const ip = request.headers.get("cf-connecting-ip");
 
+  
+
+
+  console.log("==== REQUEST DEBUG ====");
+  console.log("Full URL:", request.url);
+  console.log("Pathname:", url.pathname);
+  console.log("Method:", method);
+
   // =========================
   // ✅ LOGIN
   // =========================
