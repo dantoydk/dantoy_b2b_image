@@ -64,7 +64,7 @@ async function fetchProductsLimited(url, headers, maxLimit = 500) {
 }
 
 // ==========================
-// ✅ FETCH PRODUCT MEDIA
+// ✅ FETCH MEDIA
 // ==========================
 async function fetchMediaLimited(url, headers, maxLimit = 3000) {
   let allData = [];
@@ -134,18 +134,33 @@ export async function onRequestGet(context) {
   }
 
   // =========================
-  // ✅ SHOPWARE CONFIG
+  // ✅ CACHE SETUP (SHARED)
   // =========================
-  const shopwareApiUrl = "https://shop.dantoy.dk/api";
-  const clientId = env.client_id;
-  const clientSecret = env.client_secret;
+  const cache = caches.default;
 
-  // ✅ Language IDs
-  const LANG_DE = "01900cb1f3fc70539bddaf5d90028e77";
-  const LANG_EN = "01900cd6fae6726b934a666f981223d3";
+  const baseUrl = new URL(request.url);
+  baseUrl.search = ""; // ✅ remove filters
 
-  try {
-    // ✅ 1. Get Shopware token
+  const cacheKey = new Request(baseUrl.toString(), request);
+
+  let cachedResponse = await cache.match(cacheKey);
+
+  let products;
+
+  if (cachedResponse) {
+    console.log("✅ Cache HIT");
+    products = await cachedResponse.json();
+  } else {
+    console.log("❌ Cache MISS");
+
+    const shopwareApiUrl = "https://shop.dantoy.dk/api";
+    const clientId = env.client_id;
+    const clientSecret = env.client_secret;
+
+    const LANG_DE = "01900cb1f3fc70539bddaf5d90028e77";
+    const LANG_EN = "01900cd6fae6726b934a666f981223d3";
+
+    // ✅ Get Shopware token
     const tokenRes = await fetch(`${shopwareApiUrl}/oauth/token`, {
       method: "POST",
       headers: {
@@ -161,7 +176,7 @@ export async function onRequestGet(context) {
     const tokenData = await tokenRes.json();
     const shopToken = tokenData.access_token;
 
-    // ✅ 2. Fetch products WITH translations
+    // ✅ Fetch products with translations
     const rawProducts = await fetchProductsLimited(
       `${shopwareApiUrl}/product?associations[translations][]`,
       {
@@ -171,9 +186,7 @@ export async function onRequestGet(context) {
       500
     );
 
-    console.log("RAW PRODUCTS:", rawProducts.length);
-
-    // ✅ 3. Fetch media
+    // ✅ Fetch media
     const mediaData = await fetchMediaLimited(
       `${shopwareApiUrl}/product-media`,
       {
@@ -183,58 +196,35 @@ export async function onRequestGet(context) {
       3000
     );
 
-    console.log("MEDIA COUNT:", mediaData.length);
-
-    // =========================
-    // ✅ MAP PRODUCT → IMAGES
-    // =========================
+    // ✅ Build product → images
     const productImagesMap = {};
 
     for (const pm of mediaData) {
-      const productId = pm.productId;
-      const media = pm.media;
+      if (!pm.productId || !pm.media) continue;
+      if (!pm.media.mimeType?.startsWith("image/")) continue;
 
-      if (!productId || !media) continue;
-      if (!media.mimeType?.startsWith("image/")) continue;
-
-      const url = media.url?.replace(/ /g, "%20");
+      const url = pm.media.url?.replace(/ /g, "%20");
       if (!url) continue;
 
-      if (!productImagesMap[productId]) {
-        productImagesMap[productId] = [];
+      if (!productImagesMap[pm.productId]) {
+        productImagesMap[pm.productId] = [];
       }
 
-      if (productImagesMap[productId].length < 10) {
-        productImagesMap[productId].push(url);
+      if (productImagesMap[pm.productId].length < 10) {
+        productImagesMap[pm.productId].push(url);
       }
     }
 
-    // =========================
-    // ✅ QUERY PARAMS
-    // =========================
-    const urlObj = new URL(request.url);
-    const productNumber = urlObj.searchParams.get("productNumber");
-    const limit = parseInt(urlObj.searchParams.get("limit")) || 0;
-    const skip = parseInt(urlObj.searchParams.get("skip")) || 0;
-
-    // =========================
-    // ✅ BUILD RESULT
-    // =========================
-    let products = rawProducts
+    // ✅ Build full dataset
+    products = rawProducts
       .filter(p => p.active === true)
       .map(p => {
         let name_de = "";
         let name_en = "";
 
-        const translations = p.translations || [];
-
-        for (const t of translations) {
-          if (t.languageId === LANG_DE) {
-            name_de = t.name || "";
-          }
-          if (t.languageId === LANG_EN) {
-            name_en = t.name || "";
-          }
+        for (const t of p.translations || []) {
+          if (t.languageId === LANG_DE) name_de = t.name || "";
+          if (t.languageId === LANG_EN) name_en = t.name || "";
         }
 
         return {
@@ -248,35 +238,44 @@ export async function onRequestGet(context) {
         };
       });
 
-    // ✅ Sort
-    products.sort((a, b) =>
-      parseFloat(a.productNumber) - parseFloat(b.productNumber)
-    );
-
-    // ✅ Filtering
-    let result = products;
-
-    if (productNumber) {
-      result = products.filter(p => p.productNumber === productNumber);
-    } else if (limit > 0) {
-      result = products.slice(skip, skip + limit);
-    }
-
-    // =========================
-    // ✅ RESPONSE
-    // =========================
-    return new Response(JSON.stringify(result), {
+    // ✅ store in cache (5 min)
+    const response = new Response(JSON.stringify(products), {
       headers: {
-        "Content-Type": "application/json"
+        "Cache-Control": "public, max-age=300"
       }
     });
 
-  } catch (err) {
-    console.error("ERROR:", err);
-
-    return new Response(
-      `Failed: ${err.message}`,
-      { status: 500 }
-    );
+    context.waitUntil(cache.put(cacheKey, response.clone()));
   }
+
+  // =========================
+  // ✅ FILTER AFTER CACHE
+  // =========================
+  const urlObj = new URL(request.url);
+  const productNumber = urlObj.searchParams.get("productNumber");
+  const limit = parseInt(urlObj.searchParams.get("limit")) || 0;
+  const skip = parseInt(urlObj.searchParams.get("skip")) || 0;
+
+  let result = products;
+
+  if (productNumber) {
+    result = result.filter(p => p.productNumber === productNumber);
+  } else if (limit > 0) {
+    result = result.slice(skip, skip + limit);
+  }
+
+  // ✅ SORT (always final step)
+  result.sort((a, b) =>
+    parseFloat(a.productNumber) - parseFloat(b.productNumber)
+  );
+
+  // =========================
+  // ✅ RESPONSE
+  // =========================
+  return new Response(JSON.stringify(result), {
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cache": cachedResponse ? "HIT" : "MISS"
+    }
+  });
 }
