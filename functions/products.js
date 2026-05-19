@@ -120,7 +120,7 @@ export async function onRequest(context) {
   // =========================
   // ✅ LOGIN
   // =========================
-  if (url.pathname === "/api/login" && method === "POST") {
+  if (url.pathname === "/products/login" && method === "POST") {
     try {
       const { username, password } = await request.json();
 
@@ -159,7 +159,7 @@ export async function onRequest(context) {
   // =========================
   // ✅ PROTECTED API
   // =========================
-  if (url.pathname === "/api/images" && method === "GET") {
+  if (url.pathname === "/products/images" && method === "GET") {
 
     const user = await authenticate();
 
