@@ -24,6 +24,17 @@ function checkLoginRateLimit(ip, limit = 10, windowMs = 60000) {
   return record.count <= limit;
 }
 
+async function checkIPAccess(env, ip) {
+  const enforce = await env.CONTROL_KV.get("config:enforce_ip");
+
+  if (enforce !== "true") {
+    return true;
+  }
+
+  const allowed = await env.CONTROL_KV.get(`ip:${ip}`);
+  return allowed === "true";
+}
+
 // ==========================
 // ✅ PASSWORD HASH (OPTIONAL but recommended)
 // ==========================
@@ -43,6 +54,14 @@ export async function onRequestPost(context) {
   const { request, env } = context;
 
   const ip = request.headers.get("cf-connecting-ip");
+
+  
+  const ipAllowed = await checkIPAccess(env, ip);
+
+  if (!ipAllowed) {
+    return new Response("IP not allowed", { status: 403 });
+  }
+
 
   // ✅ Rate limit login attempts
   if (!checkLoginRateLimit(ip, 10, 60000)) {

@@ -5,6 +5,21 @@ import { verifyJWT } from "../lib/jwt";
 // ==========================
 const rateLimitMap = new Map();
 
+async function checkIPAccess(env, ip) {
+  // ✅ read toggle
+  const enforce = await env.B2B_IMAGE_IP.get("config:enforce_ip");
+
+  // ✅ if not enabled → allow everyone
+  if (enforce !== "true") {
+    return true;
+  }
+
+  // ✅ check if IP is allowed
+  const allowed = await env.B2B_IMAGE_IP.get(`ip:${ip}`);
+
+  return allowed === "true";
+}
+
 function checkRateLimit(ip, limit = 60, windowMs = 60000) {
   const now = Date.now();
 
@@ -121,6 +136,15 @@ export async function onRequestGet(context) {
 
   const token = auth.replace("Bearer ", "");
   const user = await verifyJWT(token, env.JWT_SECRET);
+
+  
+
+    // ✅ check IP access
+  const ipAllowed = await checkIPAccess(env, ip);
+
+  if (!ipAllowed) {
+    return new Response("IP not allowed", { status: 403 });
+    }
 
   if (!user) {
     return new Response("Invalid or expired token", { status: 401 });
