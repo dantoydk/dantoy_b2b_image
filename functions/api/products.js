@@ -253,7 +253,7 @@ export async function onRequestGet(context) {
 
         return {
           productNumber: p.productNumber,
-          productId: p.id,
+          //productId: p.id,
           description: p.name,
           description_de: name_de,
           description_en: name_en,
