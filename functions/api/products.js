@@ -1,6 +1,8 @@
 import { verifyJWT } from "../lib/jwt";
 
-// ✅ Rate limit (simple in-memory)
+// ==========================
+// ✅ RATE LIMIT
+// ==========================
 const rateLimitMap = new Map();
 
 function checkRateLimit(ip, limit = 60, windowMs = 60000) {
@@ -22,7 +24,9 @@ function checkRateLimit(ip, limit = 60, windowMs = 60000) {
   return record.count <= limit;
 }
 
-// ✅ Pagination helper (matches your Python)
+// ==========================
+// ✅ FETCH PRODUCTS (PAGINATION)
+// ==========================
 async function fetchProductsLimited(url, headers, maxLimit = 500) {
   let allData = [];
   let page = 1;
@@ -59,7 +63,9 @@ async function fetchProductsLimited(url, headers, maxLimit = 500) {
   return allData;
 }
 
-// ✅ Pagination for product media (your existing improved version)
+// ==========================
+// ✅ FETCH PRODUCT MEDIA
+// ==========================
 async function fetchMediaLimited(url, headers, maxLimit = 3000) {
   let allData = [];
   let page = 1;
@@ -96,6 +102,9 @@ async function fetchMediaLimited(url, headers, maxLimit = 3000) {
   return allData;
 }
 
+// ==========================
+// ✅ MAIN HANDLER
+// ==========================
 export async function onRequestGet(context) {
   const { request, env } = context;
 
@@ -125,7 +134,7 @@ export async function onRequestGet(context) {
   }
 
   // =========================
-  // ✅ SHOPWARE LOGIC
+  // ✅ SHOPWARE CONFIG
   // =========================
   const shopwareApiUrl = "https://shop.dantoy.dk/api";
   const clientId = env.client_id;
@@ -148,7 +157,7 @@ export async function onRequestGet(context) {
     const tokenData = await tokenRes.json();
     const shopToken = tokenData.access_token;
 
-    // ✅ 2. Fetch products (FIXED WITH PAGINATION)
+    // ✅ 2. Fetch products (pagination)
     const rawProducts = await fetchProductsLimited(
       `${shopwareApiUrl}/product`,
       {
@@ -160,7 +169,7 @@ export async function onRequestGet(context) {
 
     console.log("RAW PRODUCTS COUNT:", rawProducts.length);
 
-    // ✅ 3. Fetch product media
+    // ✅ 3. Fetch product-media
     const mediaData = await fetchMediaLimited(
       `${shopwareApiUrl}/product-media`,
       {
@@ -172,38 +181,54 @@ export async function onRequestGet(context) {
 
     console.log("MEDIA COUNT:", mediaData.length);
 
-    // ✅ 4. Build media map (KEY = product_media.id)
-    const mediaMap = {};
+    // =========================
+    // ✅ BUILD PRODUCT → IMAGES MAP
+    // =========================
+    const productImagesMap = {};
 
     for (const pm of mediaData) {
-      if (!pm.id) continue;
-      mediaMap[pm.id] = pm.media || {};
+      const productId = pm.productId;
+      const media = pm.media;
+
+      if (!productId || !media) continue;
+
+      if (!media.mimeType || !media.mimeType.startsWith("image/")) continue;
+
+      const mediaUrl = media.url;
+      if (!mediaUrl) continue;
+
+      const cleanUrl = mediaUrl.replace(/ /g, "%20");
+
+      if (!productImagesMap[productId]) {
+        productImagesMap[productId] = [];
+      }
+
+      // max 10 images per product (change/remove if needed)
+      if (productImagesMap[productId].length < 10) {
+        productImagesMap[productId].push(cleanUrl);
+      }
     }
 
-    // ✅ 5. Query params
+    // =========================
+    // ✅ QUERY PARAMS
+    // =========================
     const urlObj = new URL(request.url);
     const productNumber = urlObj.searchParams.get("productNumber");
     const limit = parseInt(urlObj.searchParams.get("limit")) || 0;
     const skip = parseInt(urlObj.searchParams.get("skip")) || 0;
 
-    // ✅ 6. Build results (matches your Python logic)
+    // =========================
+    // ✅ BUILD FINAL RESPONSE
+    // =========================
     let products = rawProducts
       .filter(p => p.active === true)
-      .map(p => {
-        const coverId = p.coverId;
-        const media = coverId ? mediaMap[coverId] : {};
-
-        const imageUrl = media?.url
-          ? media.url.replace(/ /g, "%20")
-          : "";
-
-        return {
-          productNumber: p.productNumber,
-          productId: p.id,
-          description: p.description,
-          image_link: imageUrl
-        };
-      });
+      .map(p => ({
+        productNumber: p.productNumber,
+        productId: p.id,
+        description: p.name,          // ✅ correct
+        updatedAt: p.updatedAt,       // ✅ added
+        images: productImagesMap[p.id] || [] // ✅ all images
+      }));
 
     // ✅ Sort
     products.sort((a, b) =>
@@ -219,7 +244,9 @@ export async function onRequestGet(context) {
       result = products.slice(skip, skip + limit);
     }
 
-    // ✅ Response
+    // =========================
+    // ✅ RESPONSE
+    // =========================
     return new Response(JSON.stringify(result), {
       headers: {
         "Content-Type": "application/json"
